@@ -1,12 +1,13 @@
 {
   "name": "websocket_backend",
   "version": "1.0.0",
-  "description": "",
+  "description": "Socket.IO Backend",
   "main": "server.js",
   "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
-    "start": "nodemon server.js"
+    "dev": "nodemon server.js",
+    "start": "node server.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
   "author": "",
