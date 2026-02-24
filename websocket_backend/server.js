@@ -7,7 +7,7 @@ const server = http.createServer(app);
 
 const io = new Server(server, {
   cors: {
-    origin: "http://localhost:3000",
+    origin: "*", // Allow all origins for development
     methods: ["GET", "POST"],
   },
 });
@@ -25,22 +25,28 @@ io.on("connection", (socket) => {
 
   // JOIN EVENT
   socket.on("join", ({ username, role, room }) => {
-    users[socket.id] = { username, role, room };
+    users[socket.id] = { username, role, room: role === "user" ? room : null };
+    console.log(`${username} (${role}) joined`, room || "ADMIN");
 
     if (role === "user") {
       socket.join(room);
 
-      // Notify room
-      socket.to(room).emit("message", {
-        system: true,
-        text: `${username} joined ${room}`,
-      });
+      const joinMsg = {
+        username: "SYSTEM",
+        room,
+        text: `✅ ${username} joined ${room}`,
+        timestamp: new Date().toLocaleTimeString(),
+        type: "join",
+        senderId: socket.id,
+      };
 
-      // Notify admin
+      io.to(room).emit("message", joinMsg);
       io.to("ADMIN_MONITOR").emit("adminEvent", {
         type: "USER_JOINED",
         username,
         room,
+        timestamp: joinMsg.timestamp,
+        senderId: socket.id,
       });
     }
 
@@ -50,7 +56,7 @@ io.on("connection", (socket) => {
     }
   });
 
-  // USER MESSAGE
+  // CHAT MESSAGE EVENT
   socket.on("chatMessage", (text) => {
     const user = users[socket.id];
     if (!user) return;
@@ -60,50 +66,58 @@ io.on("connection", (socket) => {
         username: user.username,
         room: user.room,
         text,
-        timestamp: new Date(),
+        timestamp: new Date().toLocaleTimeString(),
+        type: "message",
+        senderId: socket.id,
       };
 
-      // Send to room only
       io.to(user.room).emit("message", messageData);
-
-      // Send to admin monitor
       io.to("ADMIN_MONITOR").emit("adminMessage", messageData);
     }
 
     if (user.role === "admin") {
-      // Admin broadcast to all rooms
-      io.emit("message", {
-        username: "ADMIN",
+      const adminMsg = {
+        username: user.username || "ADMIN",
         text,
-        room: "ALL",
-        timestamp: new Date(),
-      });
+        room: "BROADCAST",
+        timestamp: new Date().toLocaleTimeString(),
+        type: "message",
+        senderId: socket.id,
+      };
+      io.emit("message", adminMsg);
     }
   });
 
-  // DISCONNECT
+  // DISCONNECT EVENT
   socket.on("disconnect", () => {
     const user = users[socket.id];
     if (!user) return;
 
-    if (user.role === "user") {
-      socket.to(user.room).emit("message", {
-        system: true,
-        text: `${user.username} left the room`,
+    if (user.role === "user" && user.room) {
+      io.to(user.room).emit("message", {
+        username: "SYSTEM",
+        room: user.room,
+        text: `❌ ${user.username} disconnected`,
+        timestamp: new Date().toLocaleTimeString(),
+        type: "leave",
+        senderId: socket.id,
       });
 
       io.to("ADMIN_MONITOR").emit("adminEvent", {
         type: "USER_LEFT",
         username: user.username,
         room: user.room,
+        timestamp: new Date().toLocaleTimeString(),
+        senderId: socket.id,
       });
     }
 
     delete users[socket.id];
+    console.log(`${user.username} disconnected`);
   });
 });
 
-const PORT = 5000;
+const PORT = 5003; // Changed port to 5003
 server.listen(PORT, () => {
   console.log(`Server running on http://localhost:${PORT}`);
 });
