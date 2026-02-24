@@ -1,18 +1,17 @@
-import React, { useEffect, useState } from "react";
+import React from "react";
 import { io } from "socket.io-client";
+import { useEffect, useState } from "react";
 
-const socket = io("http://localhost:5000");
+const SERVER_URL = "http://localhost:5000";
 
-function App() {
-  const [username, setUsername] = useState("");
-  const [room, setRoom] = useState("");
-  const [role, setRole] = useState("user");
-  const [joined, setJoined] = useState(false);
-
-  const [message, setMessage] = useState("");
+function ChatWindow({ username, role, room }) {
+  const [socket] = useState(() => io(SERVER_URL));
   const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState("");
 
   useEffect(() => {
+    socket.emit("join", { username, role, room });
+
     socket.on("message", (data) => {
       setMessages((prev) => [...prev, data]);
     });
@@ -24,76 +23,57 @@ function App() {
     socket.on("adminEvent", (data) => {
       setMessages((prev) => [
         ...prev,
-        { system: true, text: `${data.type} - ${data.username} (${data.room})` },
+        {
+          system: true,
+          text: `${data.type} - ${data.username} (${data.room})`,
+        },
       ]);
     });
 
     return () => {
-      socket.off("message");
-      socket.off("adminMessage");
-      socket.off("adminEvent");
+      socket.disconnect();
     };
-  }, []);
-
-  const joinChat = () => {
-    socket.emit("join", { username, role, room });
-    setJoined(true);
-  };
+  }, [socket, username, role, room]);
 
   const sendMessage = () => {
-    if (!message.trim()) return;
-    socket.emit("chatMessage", message);
-    setMessage("");
+    if (!input.trim()) return;
+    socket.emit("chatMessage", input);
+    setInput("");
   };
 
-  if (!joined) {
-    return (
-      <div style={{ padding: 20 }}>
-        <h2>Join Chat</h2>
-
-        <input
-          placeholder="Username"
-          value={username}
-          onChange={(e) => setUsername(e.target.value)}
-        />
-
-        <br /><br />
-
-        <select value={role} onChange={(e) => setRole(e.target.value)}>
-          <option value="user">User</option>
-          <option value="admin">Admin</option>
-        </select>
-
-        <br /><br />
-
-        {role === "user" && (
-          <>
-            <input
-              placeholder="Room Name"
-              value={room}
-              onChange={(e) => setRoom(e.target.value)}
-            />
-            <br /><br />
-          </>
-        )}
-
-        <button onClick={joinChat}>Join</button>
-      </div>
-    );
-  }
-
   return (
-    <div style={{ padding: 20 }}>
-      <h2>{role === "admin" ? "Admin Dashboard" : `Room: ${room}`}</h2>
+    <div
+      style={{
+        border: "2px solid black",
+        padding: 10,
+        width: "48%",
+        marginBottom: 20,
+      }}
+    >
+      <h3>
+        {role === "admin"
+          ? "👑 ADMIN"
+          : `👤 ${username} (${room})`}
+      </h3>
 
-      <div style={{ height: 300, overflowY: "scroll", border: "1px solid gray", padding: 10 }}>
-        {messages.map((msg, index) => (
-          <div key={index}>
+      <div
+        style={{
+          height: 200,
+          overflowY: "auto",
+          border: "1px solid gray",
+          padding: 5,
+          marginBottom: 10,
+        }}
+      >
+        {messages.map((msg, i) => (
+          <div key={i}>
             {msg.system ? (
               <i>{msg.text}</i>
             ) : (
               <span>
-                {msg.room && role === "admin" && <b>[{msg.room}] </b>}
+                {msg.room && role === "admin" && (
+                  <b>[{msg.room}] </b>
+                )}
                 <b>{msg.username}:</b> {msg.text}
               </span>
             )}
@@ -101,16 +81,27 @@ function App() {
         ))}
       </div>
 
-      <br />
-
       <input
-        value={message}
-        onChange={(e) => setMessage(e.target.value)}
-        placeholder="Type message"
+        value={input}
+        onChange={(e) => setInput(e.target.value)}
+        placeholder="Type..."
       />
       <button onClick={sendMessage}>Send</button>
     </div>
   );
 }
 
-export default App;
+export default function App() {
+  return (
+    <div style={{ padding: 20 }}>
+      <h2>🧪 Socket Room + Admin Simulation</h2>
+
+      <div style={{ display: "flex", flexWrap: "wrap", gap: "4%" }}>
+        <ChatWindow username="Amit" role="user" room="room1" />
+        <ChatWindow username="Rahul" role="user" room="room2" />
+        <ChatWindow username="Priya" role="user" room="room1" />
+        <ChatWindow username="SuperAdmin" role="admin" />
+      </div>
+    </div>
+  );
+}
