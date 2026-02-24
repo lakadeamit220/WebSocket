@@ -1,187 +1,531 @@
-import React from "react";
+import React, { useEffect, useState, useRef, useCallback } from "react";
 import { io } from "socket.io-client";
-import { useEffect, useState, useRef } from "react";
 import "./App.css";
 
-const SERVER_URL = "http://localhost:5003"; // Updated to match backend port
+const SERVER_URL = "http://localhost:5003";
 
-function ChatWindow({ initialUsername, initialRole, initialRoom }) {
-  const [socket] = useState(() => io(SERVER_URL, { transports: ["websocket"] }));
-  const [username, setUsername] = useState(initialUsername || "");
-  const [role, setRole] = useState(initialRole || "user");
-  const [room, setRoom] = useState(initialRoom || "room1");
+// ─── Utility ────────────────────────────────────────────────────────────────
+function createSocket() {
+  return io(SERVER_URL, { transports: ["websocket"], autoConnect: true });
+}
+
+// ─── USER PANEL ─────────────────────────────────────────────────────────────
+function UserPanel({ defaultName, defaultRoom, accentColor }) {
+  const socketRef = useRef(null);
+  const messagesEndRef = useRef(null);
+
+  const [isConnected, setIsConnected] = useState(false);
+  const [connError, setConnError] = useState(null);
+  const [username, setUsername] = useState(defaultName);
+  const [room, setRoom] = useState(defaultRoom);
   const [joined, setJoined] = useState(false);
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
-  const [isConnected, setIsConnected] = useState(false);
-  const [connError, setConnError] = useState(null);
-  const messagesEndRef = useRef(null);
+  const [mySocketId, setMySocketId] = useState(null);
 
+  // Initialise socket once
   useEffect(() => {
+    const socket = createSocket();
+    socketRef.current = socket;
+
     socket.on("connect", () => {
       setIsConnected(true);
       setConnError(null);
-      console.log("Socket connected:", socket.id);
+      setMySocketId(socket.id);
     });
-
     socket.on("disconnect", () => {
       setIsConnected(false);
-      console.log("Socket disconnected");
       setJoined(false);
     });
-
     socket.on("connect_error", (err) => {
-      console.error("connect_error:", err.message || err);
-      setConnError(err.message || "Connection error");
+      setConnError(err.message || "Cannot connect to server");
     });
 
+    // All room messages (including admin broadcasts) arrive here
     socket.on("message", (data) => {
       setMessages((prev) => [...prev, data]);
     });
 
-    socket.on("adminMessage", (data) => {
-      setMessages((prev) => [...prev, { ...data, isAdminMsg: true }]);
-    });
-
-    socket.on("adminEvent", (data) => {
-      setMessages((prev) => [
-        ...prev,
-        {
-          username: "ADMIN_EVENT",
-          text: `📢 ${data.type} - ${data.username} (${data.room})`,
-          timestamp: data.timestamp,
-          type: "event",
-          senderId: data.senderId,
-        },
-      ]);
-    });
-
     return () => {
-      socket.off("connect");
-      socket.off("disconnect");
-      socket.off("connect_error");
-      socket.off("message");
-      socket.off("adminMessage");
-      socket.off("adminEvent");
       socket.disconnect();
     };
-  }, [socket]);
+  }, []);
 
+  // Auto-scroll to latest message
   useEffect(() => {
-    if (messagesEndRef.current) {
-      messagesEndRef.current.scrollIntoView({ behavior: "smooth" });
-    }
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
-  const doJoin = () => {
-    if (!username.trim()) return alert("Enter a username");
-    socket.emit("join", { username: username.trim(), role, room });
-    setMessages((prev) => [
-      ...prev,
-      {
-        username: "SYSTEM",
-        text: `You joined ${role === "user" ? room : "ADMIN MONITOR"}`,
-        timestamp: new Date().toLocaleTimeString(),
-        type: "system",
-        senderId: socket.id,
-      },
-    ]);
+  const handleJoin = () => {
+    if (!username.trim()) return alert("Please enter your name first.");
+    socketRef.current.emit("join", {
+      username: username.trim(),
+      role: "user",
+      room,
+    });
+    setMySocketId(socketRef.current.id);
     setJoined(true);
   };
 
-  const sendMessage = () => {
-    if (!joined) return alert("Join first to send messages");
-    if (!input.trim()) return;
-    const localMsg = {
-      username,
-      room: role === "user" ? room : "BROADCAST",
-      text: input.trim(),
-      timestamp: new Date().toLocaleTimeString(),
-      type: "message",
-      senderId: socket.id,
-    };
-    setMessages((prev) => [...prev, localMsg]);
-    socket.emit("chatMessage", input.trim());
+  const handleLeave = () => {
+    // Mark as not joined immediately so UI updates right away
+    setJoined(false);
+    setMessages([]);
+    // Disconnect triggers server-side cleanup (USER_LEFT event), then reconnect
+    socketRef.current.disconnect();
+    socketRef.current.connect();
+  };
+
+  const sendMessage = useCallback(() => {
+    if (!joined || !input.trim()) return;
+    const text = input.trim().slice(0, 500); // client-side cap matches server
+    socketRef.current.emit("chatMessage", { text });
     setInput("");
+  }, [joined, input]);
+
+  const handleKeyDown = (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
   };
 
   return (
-    <div className="chat-container">
-      <div className="chat-header">
-        <div>
-          <strong>{username || "No name"}</strong>
-          {" • "}
-          <em>{role === "admin" ? "ADMIN" : room}</em>
+    <div className="panel user-panel" style={{ "--accent": accentColor }}>
+      {/* ── Header ── */}
+      <div className="panel-header" style={{ background: accentColor }}>
+        <div className="panel-title">
+          <span className="role-badge user-badge">👤 USER</span>
+          <span className="panel-name">{username || "—"}</span>
         </div>
-        <div>
-          <span className={`status ${isConnected ? "connected" : "disconnected"}`}>
-            {isConnected ? "🟢 Connected" : "🔴 Disconnected"}
-          </span>
-        </div>
+        <span className={`conn-dot ${isConnected ? "on" : "off"}`}>
+          {isConnected ? "● Connected" : "● Offline"}
+        </span>
       </div>
 
-      <div className="join-panel">
-        <input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="Your name" />
-        <select value={role} onChange={(e) => setRole(e.target.value)}>
-          <option value="user">User</option>
-          <option value="admin">Admin</option>
+      {/* ── How-to guide ── */}
+      {!joined && (
+        <div className="guide-box">
+          <div className="guide-title">📋 How to start chatting</div>
+          <ol className="guide-steps">
+            <li>Your name is pre-filled. You can change it if you like.</li>
+            <li>Choose a room — <strong>Room 1</strong> or <strong>Room 2</strong>.</li>
+            <li>Click <strong>Join Room</strong> to connect.</li>
+            <li>Type a message in the box below and press <kbd>Enter</kbd> or click <strong>Send</strong>.</li>
+          </ol>
+          <div className="guide-note">
+            ℹ️ You will only see messages from users in the <em>same room</em> as you.
+            Admin can message you from their panel.
+          </div>
+        </div>
+      )}
+
+      {/* ── Join controls ── */}
+      <div className="join-bar">
+        <input
+          className="join-input"
+          value={username}
+          onChange={(e) => setUsername(e.target.value)}
+          placeholder="Your name"
+          disabled={joined}
+        />
+        <select
+          className="join-select"
+          value={room}
+          onChange={(e) => setRoom(e.target.value)}
+          disabled={joined}
+        >
+          <option value="room1">🏠 Room 1</option>
+          <option value="room2">🏡 Room 2</option>
         </select>
-        {role === "user" && (
-          <select value={room} onChange={(e) => setRoom(e.target.value)}>
-            <option value="room1">room1</option>
-            <option value="room2">room2</option>
-          </select>
-        )}
         {!joined ? (
-          <button onClick={doJoin} className="join-btn">Join</button>
+          <button
+            className="btn btn-join"
+            onClick={handleJoin}
+            disabled={!isConnected}
+          >
+            Join Room
+          </button>
         ) : (
-          <button onClick={() => setJoined(false)} className="leave-btn">Leave</button>
+          <button className="btn btn-leave" onClick={handleLeave}>
+            Leave
+          </button>
         )}
       </div>
 
-      {connError && <div className="conn-error">Connection error: {connError}</div>}
+      {/* ── Room indicator (shown after join) ── */}
+      {joined && (
+        <div className="room-indicator">
+          <span>📍 You are in <strong>{room === "room1" ? "Room 1" : "Room 2"}</strong></span>
+          <span className="room-tip">Messages below are from your room</span>
+        </div>
+      )}
 
-      <div className="messages-box">
+      {/* ── Error banner ── */}
+      {connError && (
+        <div className="error-banner">
+          ⚠️ {connError} — Is the backend running on port 5003?
+        </div>
+      )}
+
+      {/* ── Messages ── */}
+      <div className="messages-area">
         {messages.length === 0 ? (
-          <div className="no-messages">No messages yet — follow the steps above to join.</div>
+          <div className="empty-state">
+            {joined
+              ? "No messages yet. Say hello! 👋"
+              : "Join a room to start chatting."}
+          </div>
         ) : (
-          messages.map((msg, i) => (
-            <div key={i} className={`message ${msg.senderId === socket.id ? "you" : ""}`}>
-              <div className="msg-meta">
-                <span className="from">{msg.senderId === socket.id ? "You" : msg.username}</span>
-                <span className="timestamp">{msg.timestamp}</span>
+          messages.map((msg, i) => {
+            const isMe = msg.senderId === mySocketId;
+            const isSystem = msg.type === "join" || msg.type === "leave";
+            const isAdmin = msg.type === "adminBroadcast";
+
+            if (isSystem) {
+              return (
+                <div key={i} className="msg-system">
+                  {msg.text}
+                </div>
+              );
+            }
+            if (isAdmin) {
+              return (
+                <div key={i} className="msg-bubble msg-admin-broadcast">
+                  <div className="bubble-meta">
+                    <span className="bubble-author admin-label">📢 ADMIN</span>
+                    <span className="bubble-time">{msg.timestamp}</span>
+                  </div>
+                  <div className="bubble-text">{msg.text}</div>
+                </div>
+              );
+            }
+            return (
+              <div
+                key={i}
+                className={`msg-bubble ${isMe ? "msg-mine" : "msg-other"}`}
+              >
+                <div className="bubble-meta">
+                  <span className="bubble-author">
+                    {isMe ? "You" : msg.username}
+                  </span>
+                  <span className="bubble-time">{msg.timestamp}</span>
+                </div>
+                <div className="bubble-text">{msg.text}</div>
               </div>
-              <div className="msg-content">{msg.text}</div>
-            </div>
-          ))
+            );
+          })
         )}
         <div ref={messagesEndRef} />
       </div>
 
-      <div className="input-area">
+      {/* ── Input ── */}
+      <div className="input-bar">
         <input
-          disabled={!joined}
+          className="msg-input"
           type="text"
           value={input}
           onChange={(e) => setInput(e.target.value)}
-          placeholder={!joined ? "Join first to send messages" : "Type a message..."}
-          onKeyPress={(e) => e.key === "Enter" && sendMessage()}
+          onKeyDown={handleKeyDown}
+          placeholder={joined ? `Message in ${room === "room1" ? "Room 1" : "Room 2"}…` : "Join a room first…"}
+          disabled={!joined}
         />
-        <button disabled={!joined} onClick={sendMessage}>Send</button>
+        <button
+          className="btn btn-send"
+          style={{ background: accentColor }}
+          onClick={sendMessage}
+          disabled={!joined}
+        >
+          Send ➤
+        </button>
       </div>
     </div>
   );
 }
 
+// ─── ADMIN PANEL ─────────────────────────────────────────────────────────────
+function AdminPanel() {
+  const socketRef = useRef(null);
+  const messagesEndRef = useRef(null);
+
+  const [isConnected, setIsConnected] = useState(false);
+  const [connError, setConnError] = useState(null);
+  const [username] = useState("Admin");
+  const [joined, setJoined] = useState(false);
+  const [messages, setMessages] = useState([]);
+  const [input, setInput] = useState("");
+  const [targetRoom, setTargetRoom] = useState("ALL");
+  const [onlineUsers, setOnlineUsers] = useState([]);
+
+  useEffect(() => {
+    const socket = createSocket();
+    socketRef.current = socket;
+
+    socket.on("connect", () => {
+      setIsConnected(true);
+      setConnError(null);
+    });
+    socket.on("disconnect", () => {
+      setIsConnected(false);
+      setJoined(false);
+    });
+    socket.on("connect_error", (err) => {
+      setConnError(err.message || "Cannot connect to server");
+    });
+
+    // Messages from users that admin monitors
+    socket.on("adminMessage", (data) => {
+      setMessages((prev) => [
+        ...prev,
+        { ...data, _display: "userMsg" },
+      ]);
+    });
+
+    // Join/Leave events
+    socket.on("adminEvent", (data) => {
+      setMessages((prev) => [
+        ...prev,
+        {
+          text:
+            data.type === "USER_JOINED"
+              ? `✅ ${data.username} joined ${data.room}`
+              : `❌ ${data.username} left ${data.room}`,
+          timestamp: data.timestamp,
+          _display: "event",
+          type: data.type,
+        },
+      ]);
+    });
+
+    // Echo of admin's own sent message
+    socket.on("adminEcho", (data) => {
+      setMessages((prev) => [...prev, { ...data, _display: "adminSent" }]);
+    });
+
+    // Live online users list
+    socket.on("onlineUsers", (list) => {
+      setOnlineUsers(list);
+    });
+
+    return () => {
+      socket.disconnect();
+    };
+  }, []);
+
+  useEffect(() => {
+    messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  const handleJoin = () => {
+    socketRef.current.emit("join", { username, role: "admin" });
+    setJoined(true);
+  };
+
+  const sendMessage = useCallback(() => {
+    if (!joined || !input.trim()) return;
+    const text = input.trim().slice(0, 500); // client-side cap matches server
+    socketRef.current.emit("chatMessage", { text, targetRoom });
+    setInput("");
+  }, [joined, input, targetRoom]);
+
+  const handleKeyDown = (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  };
+
+  return (
+    <div className="panel admin-panel">
+      {/* ── Header ── */}
+      <div className="panel-header admin-header">
+        <div className="panel-title">
+          <span className="role-badge admin-badge">🛡️ ADMIN</span>
+          <span className="panel-name">Monitor &amp; Control</span>
+        </div>
+        <span className={`conn-dot ${isConnected ? "on" : "off"}`}>
+          {isConnected ? "● Connected" : "● Offline"}
+        </span>
+      </div>
+
+      {/* ── How-to guide ── */}
+      {!joined && (
+        <div className="guide-box guide-admin">
+          <div className="guide-title">📋 Admin Panel Guide</div>
+          <ol className="guide-steps">
+            <li>Click <strong>Connect as Admin</strong> to enter monitor mode.</li>
+            <li>You will see <em>all messages</em> from both rooms in real-time.</li>
+            <li>Choose a target (Room 1, Room 2, or All Rooms) before sending.</li>
+            <li>Type your message and click <strong>Send</strong> — it will be delivered to the selected room(s).</li>
+          </ol>
+          <div className="guide-note">
+            ℹ️ Admin messages appear in <strong>purple</strong> in the user panels.
+            You can monitor who is online and in which room.
+          </div>
+        </div>
+      )}
+
+      {/* ── Join button ── */}
+      {!joined ? (
+        <div className="join-bar">
+          <button
+            className="btn btn-admin-join"
+            onClick={handleJoin}
+            disabled={!isConnected}
+          >
+            🔌 Connect as Admin
+          </button>
+        </div>
+      ) : (
+        <>
+          {/* ── Online users ── */}
+          <div className="online-users-box">
+            <div className="ou-title">👥 Online Users ({onlineUsers.length})</div>
+            {onlineUsers.length === 0 ? (
+              <div className="ou-empty">No users connected yet</div>
+            ) : (
+              <div className="ou-list">
+                {onlineUsers.map((u, i) => (
+                  <div key={i} className="ou-item">
+                    <span className="ou-name">{u.username}</span>
+                    <span className={`ou-room ${u.room === "room1" ? "room1" : "room2"}`}>
+                      {u.room === "room1" ? "Room 1" : "Room 2"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* ── Error banner ── */}
+      {connError && (
+        <div className="error-banner">
+          ⚠️ {connError} — Is the backend running on port 5003?
+        </div>
+      )}
+
+      {/* ── Messages (monitor feed) ── */}
+      <div className="messages-area">
+        {!joined ? (
+          <div className="empty-state">Connect as admin to see the live message feed.</div>
+        ) : messages.length === 0 ? (
+          <div className="empty-state">Waiting for activity… 👀</div>
+        ) : (
+          messages.map((msg, i) => {
+            if (msg._display === "event") {
+              return (
+                <div key={i} className="msg-system">
+                  {msg.text}
+                  <span className="bubble-time" style={{ marginLeft: 8 }}>
+                    {msg.timestamp}
+                  </span>
+                </div>
+              );
+            }
+            if (msg._display === "adminSent") {
+              return (
+                <div key={i} className="msg-bubble msg-admin-sent">
+                  <div className="bubble-meta">
+                    <span className="bubble-author admin-label">
+                      📢 You → {msg.room === "ALL" ? "All Rooms" : msg.room}
+                    </span>
+                    <span className="bubble-time">{msg.timestamp}</span>
+                  </div>
+                  <div className="bubble-text">{msg.text}</div>
+                </div>
+              );
+            }
+            // userMsg
+            return (
+              <div key={i} className="msg-bubble msg-monitor">
+                <div className="bubble-meta">
+                  <span className="bubble-author">{msg.username}</span>
+                  <span className={`room-tag ${msg.room === "room1" ? "room1" : "room2"}`}>
+                    {msg.room === "room1" ? "Room 1" : "Room 2"}
+                  </span>
+                  <span className="bubble-time">{msg.timestamp}</span>
+                </div>
+                <div className="bubble-text">{msg.text}</div>
+              </div>
+            );
+          })
+        )}
+        <div ref={messagesEndRef} />
+      </div>
+
+      {/* ── Admin input ── */}
+      {joined && (
+        <div className="admin-input-bar">
+          <div className="target-row">
+            <label className="target-label">📣 Send to:</label>
+            <select
+              className="target-select"
+              value={targetRoom}
+              onChange={(e) => setTargetRoom(e.target.value)}
+            >
+              <option value="ALL">🌐 All Rooms</option>
+              <option value="room1">🏠 Room 1 only</option>
+              <option value="room2">🏡 Room 2 only</option>
+            </select>
+          </div>
+          <div className="input-bar">
+            <input
+              className="msg-input"
+              type="text"
+              value={input}
+              onChange={(e) => setInput(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder={`Broadcast to ${targetRoom === "ALL" ? "all rooms" : targetRoom}…`}
+            />
+            <button className="btn btn-send btn-admin-send" onClick={sendMessage}>
+              Send ➤
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── ROOT APP ────────────────────────────────────────────────────────────────
 export default function App() {
   return (
-    <div className="app-container">
-      <h1>Socket Room Chat — Friendly UI</h1>
-      <div className="rooms-grid">
-        <ChatWindow initialUsername="Amit" initialRole="user" initialRoom="room1" />
-        <ChatWindow initialUsername="Rahul" initialRole="user" initialRoom="room2" />
-        <ChatWindow initialUsername="SuperAdmin" initialRole="admin" />
-      </div>
+    <div className="app-root">
+      {/* Title */}
+      <header className="app-header">
+        <h1 className="app-title">⚡ WebSocket Chat Demo</h1>
+        <p className="app-subtitle">
+          2 users · 2 rooms · 1 admin — real-time messaging via Socket.IO
+        </p>
+        <div className="legend">
+          <span className="legend-item user1">👤 User 1 — Room 1</span>
+          <span className="legend-item user2">👤 User 2 — Room 2</span>
+          <span className="legend-item adminl">🛡️ Admin — monitors both</span>
+        </div>
+      </header>
+
+      {/* Panels */}
+      <main className="panels-grid">
+        <UserPanel
+          panelId="user1"
+          defaultName="Amit"
+          defaultRoom="room1"
+          accentColor="#4f46e5"
+        />
+        <UserPanel
+          panelId="user2"
+          defaultName="Rahul"
+          defaultRoom="room2"
+          accentColor="#0891b2"
+        />
+        <AdminPanel />
+      </main>
+
+      <footer className="app-footer">
+        Backend: <code>localhost:5003</code> · Frontend: Vite + React + Socket.IO
+      </footer>
     </div>
   );
 }
